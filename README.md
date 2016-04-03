@@ -1,2 +1,2 @@
 # pdn-smudge
-Smudge is a Paint.NET pluging for smudging an image
+Smudge is a Paint.NET plugin for smudging an image
