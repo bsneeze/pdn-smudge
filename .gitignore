@@ -1,0 +1,4 @@
+*.suo
+*.user
+Smudge/bin/
+Smudge/obj/
