@@ -20,11 +20,26 @@ namespace pyrochild.effects.common
         public PngBrush(string brushName)
         {
             name = brushName;
-            thumbnail = null;
-            thumbnailalphaonly = null;
             nativesize = Size.Empty;
-            thumbnail = GetSurface(32);
-            thumbnailalphaonly = GetSurfaceAlphaOnly(32);
+
+            // Decode the source PNG once and derive both thumbnails from it.
+            using (Surface source = GetSurface())
+            {
+                thumbnail = ScaleToFit(source, 32);
+                thumbnailalphaonly = ScaleToFit(source, 32);
+            }
+            AlphaOnly(thumbnailalphaonly);
+        }
+
+        public void DisposeThumbnails()
+        {
+            if (thumbnailAlphaOnlyBitmap != null)
+            {
+                thumbnailAlphaOnlyBitmap.Dispose();
+                thumbnailAlphaOnlyBitmap = null;
+            }
+            thumbnailalphaonly?.Dispose();
+            thumbnail?.Dispose();
         }
 
         public override bool Equals(object obj)
@@ -48,6 +63,20 @@ namespace pyrochild.effects.common
         private Surface thumbnailalphaonly;
         public Surface ThumbnailAlphaOnly { get { return thumbnailalphaonly; } }
 
+        // Aliases thumbnailalphaonly's memory (no copy), so it must be disposed before that surface.
+        private Bitmap thumbnailAlphaOnlyBitmap;
+        public Bitmap ThumbnailAlphaOnlyBitmap
+        {
+            get
+            {
+                if (thumbnailAlphaOnlyBitmap == null)
+                {
+                    thumbnailAlphaOnlyBitmap = thumbnailalphaonly.CreateAliasedBitmap();
+                }
+                return thumbnailAlphaOnlyBitmap;
+            }
+        }
+
         private Size nativesize;
         public Size NativeSize { get { return nativesize; } }
 
@@ -58,7 +87,14 @@ namespace pyrochild.effects.common
 
         public Surface GetSurface(int maxsidelength)
         {
-            var source = GetSurface();
+            using (Surface source = GetSurface())
+            {
+                return ScaleToFit(source, maxsidelength);
+            }
+        }
+
+        private static Surface ScaleToFit(Surface source, int maxsidelength)
+        {
             Size size;
 
             if (source.Width > source.Height)
@@ -82,7 +118,7 @@ namespace pyrochild.effects.common
             }
             else
             {
-                ret.FitSurface(ResamplingAlgorithm.Bicubic, source);
+                ret.FitSurface(ResamplingAlgorithm.Cubic, source);
             }
             return ret;
         }
@@ -124,7 +160,7 @@ namespace pyrochild.effects.common
             }
             else
             {
-                ret.FitSurface(ResamplingAlgorithm.Bicubic, source);
+                ret.FitSurface(ResamplingAlgorithm.Cubic, source);
             }
             return ret;
         }
@@ -138,7 +174,7 @@ namespace pyrochild.effects.common
 
         unsafe private static void AlphaOnly(Surface retval)
         {
-            ColorBgra* ptr = retval.GetRowAddressUnchecked(0);
+            ColorBgra* ptr = retval.GetRowPointerUnchecked(0);
             for (int y = 0; y < retval.Height; y++)
             {
                 for (int x = 0; x < retval.Width; x++)

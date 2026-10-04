@@ -5,7 +5,7 @@ using System.Collections.Generic;
 
 namespace pyrochild.effects.smudge
 {
-    class ConfigToken : EffectConfigToken
+    public class ConfigToken : EffectConfigToken
     {
         public Surface surface;
 

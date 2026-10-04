@@ -13,7 +13,7 @@ namespace pyrochild.effects.common
 
         public PngBrushCollection(IServiceProvider serviceprovider, string ownername)
         {
-            brushpath = Path.Combine(serviceprovider.GetService<PaintDotNet.AppModel.IUserFilesService>().UserFilesPath, ownername + " Brushes");
+            brushpath = Path.Combine(((PaintDotNet.AppModel.IUserFilesService)serviceprovider.GetService(typeof(PaintDotNet.AppModel.IUserFilesService))).UserFilesPath, ownername + " Brushes");
             brushes = new List<PngBrush>();
 
             if (Directory.Exists(BrushesPath))
@@ -26,7 +26,11 @@ namespace pyrochild.effects.common
                     PngBrush brush = new PngBrush(filename);
                     if (!brushes.Contains(brush))
                     {
-                        brushes.Add(new PngBrush(filename));
+                        brushes.Add(brush);
+                    }
+                    else
+                    {
+                        brush.DisposeThumbnails();
                     }
                 }
             }
@@ -142,7 +146,7 @@ namespace pyrochild.effects.common
         {
             foreach (PngBrush pb in brushes)
             {
-                pb.Thumbnail.Dispose();
+                pb.DisposeThumbnails();
             }
         }
 
