@@ -17,7 +17,7 @@ namespace pyrochild.effects.smudge
         /// Clean up any resources being used.
         /// </summary>
         /// <param name="disposing">true if managed resources should be disposed; otherwise, false.</param>
-        protected override void Dispose(bool disposing)
+        protected override void OnDispose(bool disposing)
         {
             if (disposing)
             {
@@ -25,8 +25,10 @@ namespace pyrochild.effects.smudge
                     components.Dispose();
                 if (historystack != null)
                     historystack.Dispose();
+                if (!surfaceSharedWithToken)
+                    surface?.Dispose();
             }
-            base.Dispose(disposing);
+            base.OnDispose(disposing);
         }
 
         #region Windows Form Designer generated code
@@ -38,7 +40,7 @@ namespace pyrochild.effects.smudge
         private void InitializeComponent()
         {
             this.components = new System.ComponentModel.Container();
-            this.settingStrip = new System.Windows.Forms.ToolStrip();
+            this.settingStrip = new DoubleBufferedToolStrip();
             this.brushSizeSeparator = new System.Windows.Forms.ToolStripSeparator();
             this.brushcombobox = new System.Windows.Forms.ToolStripComboBox();
             this.brushSizeLabel = new System.Windows.Forms.ToolStripLabel();
@@ -196,7 +198,7 @@ namespace pyrochild.effects.smudge
             this.zoom.AutoSize = false;
             this.zoom.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.zoom.Name = "zoom";
-            this.zoom.Size = new System.Drawing.Size(58, 23);
+            this.zoom.Size = new System.Drawing.Size(72, 23);
             this.zoom.SelectedIndexChanged += new System.EventHandler(this.zoom_SelectedIndexChanged);
             // 
             // zoomIn
@@ -235,7 +237,8 @@ namespace pyrochild.effects.smudge
             this.quality.Value = 0.5F;
             // 
             // abort
-            // 
+            //
+            this.abort.Enabled = false;
             this.abort.Location = new System.Drawing.Point(280, 4);
             this.abort.Name = "abort";
             this.abort.Size = new System.Drawing.Size(75, 23);
@@ -314,11 +317,11 @@ namespace pyrochild.effects.smudge
             // ConfigDialog
             // 
             this.AcceptButton = this.ok;
-            this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
-            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.BackColor = System.Drawing.SystemColors.Control;
+            this.AutoScaleDimensions = new System.Drawing.SizeF(96F, 96F);
+            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
             this.CancelButton = this.cancel;
             this.ClientSize = new System.Drawing.Size(684, 442);
+            this.Font = new System.Drawing.Font("Microsoft Sans Serif", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.Controls.Add(this.canvas);
             this.Controls.Add(this.panel1);
             this.Controls.Add(this.settingStrip);

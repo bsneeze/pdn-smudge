@@ -1,13 +1,17 @@
 using PaintDotNet;
 using PaintDotNet.Effects;
+using PaintDotNet.Imaging;
+using PaintDotNet.Rendering;
 using System.Drawing;
 
 namespace pyrochild.effects.smudge
 {
     [PluginSupportInfo(typeof(PluginSupportInfo))]
-    public sealed class Smudge : Effect
+    public sealed class Smudge : BitmapEffect<ConfigToken>
     {
-        public Smudge() : base(StaticName, StaticIcon, StaticSubMenu, EffectFlags.Configurable) { }
+        Surface resultSurface;
+
+        public Smudge() : base(StaticName, StaticIcon, StaticSubMenu, BitmapEffectOptions.Create() with { IsConfigurable = true }) { }
 
         internal static string RawName { get { return "Smudge"; } }
         public static string StaticName
@@ -34,22 +38,42 @@ namespace pyrochild.effects.smudge
             }
         }
 
-        public override EffectConfigDialog CreateConfigDialog()
+        protected override IEffectConfigForm OnCreateConfigForm()
         {
             return new ConfigDialog();
         }
 
-        protected unsafe override void OnSetRenderInfo(EffectConfigToken parameters, RenderArgs dstArgs, RenderArgs srcArgs)
+        protected override void OnSetToken(ConfigToken newToken)
         {
-            if (((ConfigToken)parameters).surface != null)
-            {
-                dstArgs.Surface.CopySurface(((ConfigToken)parameters).surface, EnvironmentParameters.GetSelection(srcArgs.Bounds));
-            }
+            base.OnSetToken(newToken);
 
-            base.OnSetRenderInfo(parameters, dstArgs, srcArgs);
+            if (newToken != null && newToken.surface != null)
+            {
+                resultSurface = newToken.surface;
+            }
         }
 
-        public override void Render(EffectConfigToken parameters, RenderArgs dstArgs, RenderArgs srcArgs, Rectangle[] rois, int startIndex, int length)
-        { }
+        protected override unsafe void OnRender(IBitmapEffectOutput output)
+        {
+            if (resultSurface == null)
+            {
+                return;
+            }
+
+            RectInt32 bounds = output.Bounds;
+
+            // "Repeat <effect>" on a differently-sized image would otherwise read past the surface.
+            if (bounds.X < 0 || bounds.Y < 0 || bounds.X + bounds.Width > resultSurface.Width || bounds.Y + bounds.Height > resultSurface.Height)
+            {
+                return;
+            }
+
+            using (IBitmapLock<ColorBgra32> dstLock = output.LockBgra32())
+            {
+                RegionPtr<ColorBgra32> dstRegion = new RegionPtr<ColorBgra32>(dstLock.Buffer, dstLock.Size, dstLock.BufferStride);
+                RegionPtr<ColorBgra> srcRegion = new RegionPtr<ColorBgra>(resultSurface.GetPointPointer(bounds.X, bounds.Y), bounds.Width, bounds.Height, resultSurface.Stride);
+                srcRegion.Cast<ColorBgra32>().CopyTo(dstRegion);
+            }
+        }
     }
 }

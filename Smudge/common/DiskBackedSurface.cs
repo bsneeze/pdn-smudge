@@ -13,7 +13,7 @@ using System.IO.Compression;
 using PaintDotNet;
 using State = pyrochild.effects.common.DiskBackedSurfaceState;
 using System.Drawing;
-using System.Runtime.Serialization.Formatters.Binary;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace pyrochild.effects.common
@@ -76,8 +76,16 @@ namespace pyrochild.effects.common
             FileStream fs = new FileStream(backingfile, FileMode.Open, FileAccess.Read);
             try
             {
-                BinaryFormatter bf = new BinaryFormatter();
-                surface = (Surface)bf.Deserialize(fs);
+                Surface loaded = new Surface(width, height);
+                using (BinaryReader br = new BinaryReader(fs))
+                {
+                    int w = br.ReadInt32();
+                    int h = br.ReadInt32();
+                    int byteCount = checked((int)((long)loaded.Stride * loaded.Height));
+                    byte[] buffer = br.ReadBytes(byteCount);
+                    Marshal.Copy(buffer, 0, loaded.Scan0.Pointer, byteCount);
+                }
+                surface = loaded;
                 state = State.Memory;
             }
             catch (ThreadAbortException) { }
@@ -104,8 +112,15 @@ namespace pyrochild.effects.common
             FileStream fs = new FileStream(backingfile, FileMode.Create);
             try
             {
-                BinaryFormatter bf = new BinaryFormatter();
-                bf.Serialize(fs, surface);
+                using (BinaryWriter bw = new BinaryWriter(fs))
+                {
+                    bw.Write(surface.Width);
+                    bw.Write(surface.Height);
+                    int byteCount = checked((int)((long)surface.Stride * surface.Height));
+                    byte[] buffer = new byte[byteCount];
+                    Marshal.Copy(surface.Scan0.Pointer, buffer, 0, byteCount);
+                    bw.Write(buffer);
+                }
                 state = State.Disk;
             }
             catch (ThreadAbortException) { }

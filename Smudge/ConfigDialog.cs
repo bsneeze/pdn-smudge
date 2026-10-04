@@ -1,14 +1,18 @@
 ﻿using PaintDotNet;
 using PaintDotNet.Effects;
+using PaintDotNet.Imaging;
+using PaintDotNet.Rendering;
 using pyrochild.effects.common;
 using System;
 using System.Drawing;
 using System.IO;
+using System.Linq;
+using System.Text;
 using System.Windows.Forms;
 
 namespace pyrochild.effects.smudge
 {
-    public partial class ConfigDialog : EffectConfigDialog
+    public partial class ConfigDialog : EffectConfigForm<Smudge, ConfigToken>
     {
         PngBrushCollection brushcollection;
         private HistoryStack historystack;
@@ -30,18 +34,41 @@ namespace pyrochild.effects.smudge
                 35, 40, 45, 50, 60, 70, 80, 90, 100, 125, 150, 200, 300
             };
 
+        private float DpiScale
+        {
+            get { return this.DeviceDpi / 96f; }
+        }
+
         public ConfigDialog()
         {
             InitializeComponent();
+            this.Load += (themeSender, themeArgs) =>
+            {
+                ThemeHelper.Apply(this);
+                ThemeHelper.SetEnabled(abort, strokeInProgress);
+            };
+            this.Shown += (themeSender, themeArgs) => ThemeHelper.Apply(this);
 
             this.brushcombobox.ComboBox.DrawMode = DrawMode.OwnerDrawVariable;
             this.brushcombobox.ComboBox.MeasureItem += new MeasureItemEventHandler(brushcombobox_MeasureItem);
-            this.brushcombobox.ComboBox.ItemHeight = 16;
+            this.brushcombobox.ComboBox.ItemHeight = (int)Math.Round(16 * DpiScale);
             this.brushcombobox.ComboBox.DrawItem += new DrawItemEventHandler(brushcombobox_DrawItem);
             this.brushcombobox.DropDownHeight = this.Height - 100;
 
             pressure = new SliderControl();
             jitter = new SliderControl();
+
+            float dpiScale = DpiScale;
+            if (dpiScale > 1.01f)
+            {
+                // settingStrip's own button icons aren't scaled here: ToolStrip does that itself.
+                pressure.Size = new Size((int)Math.Round(pressure.Width * dpiScale), (int)Math.Round(pressure.Height * dpiScale));
+                jitter.Size = new Size((int)Math.Round(jitter.Width * dpiScale), (int)Math.Round(jitter.Height * dpiScale));
+
+                brushcombobox.Size = new Size((int)Math.Round(brushcombobox.Width * dpiScale), brushcombobox.Height);
+                brushSize.Size = new Size((int)Math.Round(brushSize.Width * dpiScale), brushSize.Height);
+                zoom.Size = new Size((int)Math.Round(zoom.Width * dpiScale), zoom.Height);
+            }
 
             this.brushSize.ComboBox.SuspendLayout();
 
@@ -108,7 +135,8 @@ namespace pyrochild.effects.smudge
 
             renderer.Invalidated += new InvalidateEventHandler(renderer_Invalidated);
             renderer.MouseDown += new QueuedToolEventHandler(renderer_MouseDown);
-            renderer.MouseUp += new QueuedToolEventHandler(renderer_MouseUp);       
+            renderer.MouseUp += new QueuedToolEventHandler(renderer_MouseUp);
+            renderer.Aborted += new EventHandler(renderer_Aborted);
         }
 
         private void canvas_ZoomFactorChanged(object sender, EventArgs e)
@@ -127,12 +155,44 @@ namespace pyrochild.effects.smudge
                 }
                 else
                 {
-                    historystack.AddHistoryItem(surface, renderer.PopTotalInvalidRect());
-                    UpdateHistoryButtons(false);
-                    ok.Enabled = true;
+                    EndStroke();
                 }
             }
             catch (ObjectDisposedException) { }
+        }
+
+        // True from the start of a stroke until it has finished rendering or been aborted.
+        private bool strokeInProgress;
+
+        // Abort drops the queued end-of-stroke event, so an aborted stroke is finished off here too:
+        // what was rendered becomes an undo step and the buttons come back.
+        private void EndStroke()
+        {
+            if (!strokeInProgress)
+            {
+                return;
+            }
+            strokeInProgress = false;
+
+            historystack.AddHistoryItem(surface, renderer.PopTotalInvalidRect());
+            UpdateHistoryButtons(false);
+            ok.Enabled = true;
+            ThemeHelper.SetEnabled(abort, false);
+        }
+
+        // Raised on the render thread. Posted rather than invoked so the render thread never waits
+        // on the UI thread, which may itself be waiting for the renderer while the dialog closes.
+        void renderer_Aborted(object sender, EventArgs e)
+        {
+            try
+            {
+                if (IsHandleCreated && !IsDisposed)
+                {
+                    BeginInvoke(new Action(EndStroke));
+                }
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
         }
 
         void renderer_MouseDown(object sender, QueuedToolEventArgs e)
@@ -146,8 +206,10 @@ namespace pyrochild.effects.smudge
                 }
                 else
                 {
+                    strokeInProgress = true;
                     UpdateHistoryButtons(true);
                     ok.Enabled = false;
+                    ThemeHelper.SetEnabled(abort, true);
                 }
             }
             catch (ObjectDisposedException) { }
@@ -179,7 +241,7 @@ namespace pyrochild.effects.smudge
                 }
                 else
                 {
-                    this.brushSize.BackColor = SystemColors.Window;
+                    this.brushSize.BackColor = ThemeHelper.FieldBackColor;
                     this.brushSize.ToolTipText = string.Empty;
                     OnPenChanged();
                 }
@@ -193,26 +255,44 @@ namespace pyrochild.effects.smudge
 
         private void donate_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
-            Services.GetService<PaintDotNet.AppModel.IShellService>().LaunchUrl(this, "http://forums.getpaint.net/index.php?showtopic=7291");
+            ((PaintDotNet.AppModel.IShellService)Services.GetService(typeof(PaintDotNet.AppModel.IShellService))).LaunchUrl(this, "http://forums.getpaint.net/index.php?showtopic=7291");
+        }
+
+        private unsafe Surface GetSourceAsClassicSurface()
+        {
+            SizeInt32 docSize = Environment.Document.Size;
+            Surface result = new Surface(docSize.Width, docSize.Height);
+
+            using (IEffectInputBitmap<ColorBgra32> srcBitmap = Environment.GetSourceBitmapBgra32())
+            using (IBitmapLock<ColorBgra32> srcLock = srcBitmap.Lock(new RectInt32(0, 0, docSize.Width, docSize.Height)))
+            {
+                RegionPtr<ColorBgra32> srcRegion32 = new RegionPtr<ColorBgra32>(srcLock.Buffer, srcLock.Size, srcLock.BufferStride);
+                RegionPtr<ColorBgra> dstRegion = new RegionPtr<ColorBgra>(result.GetPointPointer(0, 0), result.Width, result.Height, result.Stride);
+                srcRegion32.Cast<ColorBgra>().CopyTo(dstRegion);
+            }
+
+            return result;
         }
 
         private void ConfigDialog_Load(object sender, EventArgs e)
         {
+            int topMargin = (int)Math.Round(6 * DpiScale);
+            settingStrip.Location = new Point(settingStrip.Location.X, settingStrip.Location.Y + topMargin);
+
+            int newCanvasTop = settingStrip.Bottom;
+            int topDelta = newCanvasTop - canvas.Top;
+            canvas.Bounds = new Rectangle(canvas.Left, newCanvasTop, canvas.Width, canvas.Height - topDelta);
+
             brushcollection = new PngBrushCollection(Services, Smudge.RawName);
             CreateDefaultBrushes();
             OnBrushesChanged();
 
-            for (int i = 0; i < brushcollection.Count; i++)
-            {
-                brushcombobox.Items.Add(brushcollection[i]);
-            }
-            brushcombobox.Items.Add("Add/Remove Brushes...");
-
-            this.BackColor = SystemColors.Control;
             this.Text = Smudge.StaticDialogName;
-            surface = EffectSourceSurface.Clone();
+            surface = GetSourceAsClassicSurface();
             canvas.Surface = surface;
-            canvas.Selection = Selection;
+
+            canvas.Selection = CreateSelectionRegion();
+
             historystack = new HistoryStack(surface, false);
 
             InitializeRenderer();
@@ -220,6 +300,22 @@ namespace pyrochild.effects.smudge
             this.DesktopLocation = Owner.PointToScreen(new Point(0, 30));
             this.Size = new Size(Owner.ClientSize.Width, Owner.ClientSize.Height - 30);
             this.WindowState = Owner.WindowState;
+        }
+
+        private PdnRegion CreateSelectionRegion()
+        {
+            Rectangle[] scans = Environment.Selection.RenderScans
+                .Select(r => new Rectangle(r.X, r.Y, r.Width, r.Height))
+                .ToArray();
+
+            using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath(System.Drawing.Drawing2D.FillMode.Winding))
+            {
+                if (scans.Length > 0)
+                {
+                    path.AddRectangles(scans);
+                }
+                return new PdnRegion(path);
+            }
         }
 
         private void CreateDefaultBrushes()
@@ -298,6 +394,35 @@ namespace pyrochild.effects.smudge
                 {
                     brushcombobox.SelectedItem = new PngBrush("Soft Brush");
                 }
+
+                brushDirSignature = GetBrushDirSignature();
+                UpdateBrushDropDownWidth();
+            }
+        }
+
+        private string brushDirSignature;
+
+        private static string GetBrushDirSignature()
+        {
+            try
+            {
+                string dir = PngBrushCollection.BrushesPath;
+                if (dir == null || !Directory.Exists(dir))
+                {
+                    return string.Empty;
+                }
+
+                StringBuilder sb = new StringBuilder();
+                foreach (string file in Directory.GetFiles(dir, "*.png", SearchOption.TopDirectoryOnly))
+                {
+                    FileInfo fi = new FileInfo(file);
+                    sb.Append(fi.Name).Append('|').Append(fi.Length).Append('|').Append(fi.LastWriteTimeUtc.Ticks).Append(';');
+                }
+                return sb.ToString();
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
 
@@ -327,13 +452,13 @@ namespace pyrochild.effects.smudge
 
         public void AddToPenSize(int delta)
         {
-            int newWidth = Int32Util.Clamp(BrushSize + delta, minPenSize, maxPenSize);
+            int newWidth = Math.Clamp(BrushSize + delta, minPenSize, maxPenSize);
             BrushSize = newWidth;
         }
 
-        protected override void InitialInitToken()
+        protected override EffectConfigToken OnCreateInitialToken()
         {
-            theEffectToken = new ConfigToken();
+            return new ConfigToken();
         }
 
         protected override void OnMouseWheel(MouseEventArgs e)
@@ -529,41 +654,38 @@ namespace pyrochild.effects.smudge
         }
 
 
-        protected override void InitDialogFromToken(EffectConfigToken effectTokenCopy)
+        protected override void OnUpdateDialogFromToken(ConfigToken token)
         {
-            ConfigToken token = effectTokenCopy as ConfigToken;
-
             brushcombobox.SelectedItem = token.brush;
             this.Pressure = token.strength;
             this.Jitter = token.jitter;
             this.BrushSize = token.width;
             this.Quality = token.quality;
-
-            base.InitDialogFromToken(effectTokenCopy);
         }
 
-        protected override void InitTokenFromDialog()
+        // The token references `surface` and outlives this dialog ("Repeat <effect>"), so once
+        // shared it must not be disposed here.
+        private bool surfaceSharedWithToken;
+
+        protected override void OnUpdateTokenFromDialog(ConfigToken token)
         {
             if (!this.IsDisposed)
             {
-                ConfigToken token = EffectToken as ConfigToken;
-
                 token.width = this.BrushSize;
                 token.strength = this.Pressure;
                 token.jitter = this.Jitter;
                 token.quality = this.Quality;
                 token.surface = surface;
+                surfaceSharedWithToken = true;
 
                 if (this.brushcombobox.SelectedItem != null)
                     token.brush = (PngBrush)this.brushcombobox.SelectedItem;
-
-                base.InitTokenFromDialog();
             }
         }
 
         private void ok_Click(object sender, EventArgs e)
         {
-            FinishTokenUpdate();
+            UpdateTokenFromDialog();
         }
 
         private void undo_Click(object sender, EventArgs e)
@@ -607,46 +729,47 @@ namespace pyrochild.effects.smudge
 
         void brushcombobox_DropDownClosed(object sender, EventArgs e)
         {
-            brushcombobox.BeginUpdate();
-            droppingdown = false;
-            brushcombobox.ComboBox.ItemHeight--;
-            brushcombobox.EndUpdate();
         }
 
-        bool droppingdown = false;
         void brushcombobox_DropDown(object sender, EventArgs e)
         {
-            brushcombobox.BeginUpdate();
-            OnBrushesChanged();
-            droppingdown = true;
-            brushcombobox.ComboBox.ItemHeight++;
-            brushcombobox.EndUpdate();
+            // Rebuilding re-decodes every brush PNG, so only do it when the brushes folder changed.
+            if (GetBrushDirSignature() != brushDirSignature)
+            {
+                OnBrushesChanged();
+            }
+
+            // The width computed at load may have been clamped to the pre-resize form width.
+            UpdateBrushDropDownWidth();
         }
 
+        // Always the thumbnail height; the collapsed field uses ComboBox.ItemHeight instead.
+        // Re-measuring on open/close caused flicker.
         void brushcombobox_MeasureItem(object sender, MeasureItemEventArgs e)
         {
-            if (e.Index == brushcombobox.Items.Count - 1)
-            {
-                e.ItemHeight = 32;
-            }
-            else
-            {
-                if (droppingdown)
-                {
-                    e.ItemHeight = 32;
+            e.ItemHeight = (int)Math.Round(32 * DpiScale);
+        }
 
-                    int width = (int)e.Graphics.MeasureString(brushcollection[e.Index].Name, brushcombobox.Font).Width + 32;
-                    width = Math.Max(width, (int)e.Graphics.MeasureString(brushcollection[e.Index].NativeSizePrettyString, brushcombobox.Font).Width + 72);
-                    width = width.Clamp(0, this.Width - 100);
-                    if (width > brushcombobox.ComboBox.DropDownWidth)
-                    {
-                        brushcombobox.DropDownWidth = width;
-                    }
-                }
-                else
+        private void UpdateBrushDropDownWidth()
+        {
+            float dpiScale = DpiScale;
+            int expandedItemHeight = (int)Math.Round(32 * dpiScale);
+            int maxWidth = 0;
+
+            using (Graphics g = brushcombobox.ComboBox.CreateGraphics())
+            {
+                for (int i = 0; i < brushcollection.Count; i++)
                 {
-                    e.ItemHeight = 16;
+                    int width = (int)g.MeasureString(brushcollection[i].Name, brushcombobox.Font).Width + expandedItemHeight;
+                    width = Math.Max(width, (int)g.MeasureString(brushcollection[i].NativeSizePrettyString, brushcombobox.Font).Width + (int)Math.Round(72 * dpiScale));
+                    maxWidth = Math.Max(maxWidth, width);
                 }
+            }
+
+            maxWidth = Math.Clamp(maxWidth, 0, this.Width - 100);
+            if (maxWidth > brushcombobox.ComboBox.DropDownWidth)
+            {
+                brushcombobox.DropDownWidth = maxWidth;
             }
         }
 
@@ -658,27 +781,37 @@ namespace pyrochild.effects.smudge
                 e.DrawFocusRectangle();
             }
 
-            if (e.Index == brushcombobox.Items.Count - 1)
-            {
-                e.Graphics.DrawString(brushcombobox.Items[e.Index].ToString(), e.Font, new SolidBrush(ColorBgra.Blend(new ColorBgra[] { ColorBgra.FromColor(e.ForeColor), ColorBgra.FromColor(e.BackColor) }).ToColor()), e.Bounds.X, e.Bounds.Y + 8);
-            }
-            else
-            {
-                if (e.Index >= 0)
-                {
-                    if (droppingdown)
-                    {
-                        var image = brushcollection[e.Index].ThumbnailAlphaOnly.CreateAliasedBitmap();
-                        e.Graphics.DrawImage(image, e.Bounds.X + (32 - image.Width) / 2, e.Bounds.Y + (32 - image.Height) / 2);
-                        e.Graphics.DrawString(brushcollection[e.Index].Name, e.Font, new SolidBrush(e.ForeColor), e.Bounds.X + 32, e.Bounds.Y);
+            float dpiScale = DpiScale;
+            int boxSize = (int)Math.Round(32 * dpiScale);
+            int collapsedItemHeight = (int)Math.Round(16 * dpiScale);
+            float thumbScale = boxSize / 32f;
 
-                        e.Graphics.DrawString(brushcollection[e.Index].NativeSizePrettyString, e.Font, new SolidBrush(ColorBgra.Blend(new ColorBgra[] { ColorBgra.FromColor(e.ForeColor), ColorBgra.FromColor(e.BackColor) }).ToColor()), e.Bounds.X + 64, e.Bounds.Y + 16);
+            using (SolidBrush foreBrush = new SolidBrush(e.ForeColor))
+            using (SolidBrush dimBrush = new SolidBrush(ColorBgra.Blend(new ColorBgra[] { ColorBgra.FromColor(e.ForeColor), ColorBgra.FromColor(e.BackColor) }).ToColor()))
+            {
+                if (e.Index == brushcombobox.Items.Count - 1)
+                {
+                    e.Graphics.DrawString(brushcombobox.Items[e.Index].ToString(), e.Font, dimBrush, e.Bounds.X, e.Bounds.Y + boxSize / 4);
+                }
+                else if (e.Index >= 0)
+                {
+                    PngBrush pngBrush = brushcollection[e.Index];
+                    Bitmap image = pngBrush.ThumbnailAlphaOnlyBitmap;
+
+                    if ((e.State & DrawItemState.ComboBoxEdit) == 0)
+                    {
+                        int drawWidth = (int)Math.Round(image.Width * thumbScale);
+                        int drawHeight = (int)Math.Round(image.Height * thumbScale);
+                        e.Graphics.DrawImage(image, e.Bounds.X + (boxSize - drawWidth) / 2, e.Bounds.Y + (boxSize - drawHeight) / 2, drawWidth, drawHeight);
+                        e.Graphics.DrawString(pngBrush.Name, e.Font, foreBrush, e.Bounds.X + boxSize, e.Bounds.Y);
+                        e.Graphics.DrawString(pngBrush.NativeSizePrettyString, e.Font, dimBrush, e.Bounds.X + (int)Math.Round(64 * dpiScale), e.Bounds.Y + (int)Math.Round(16 * dpiScale));
                     }
                     else
                     {
-                        var image = brushcollection[e.Index].ThumbnailAlphaOnly.CreateAliasedBitmap();
-                        e.Graphics.DrawImage(image, e.Bounds.X + (32 - image.Width) / 4, e.Bounds.Y + (32 - image.Height) / 4, image.Width / 2, image.Height / 2);
-                        e.Graphics.DrawString(brushcollection[e.Index].Name, e.Font, new SolidBrush(e.ForeColor), e.Bounds.X + 16, e.Bounds.Y);
+                        int drawWidth = (int)Math.Round(image.Width / 2f * thumbScale);
+                        int drawHeight = (int)Math.Round(image.Height / 2f * thumbScale);
+                        e.Graphics.DrawImage(image, e.Bounds.X + (collapsedItemHeight - drawWidth) / 2, e.Bounds.Y + (collapsedItemHeight - drawHeight) / 2, drawWidth, drawHeight);
+                        e.Graphics.DrawString(pngBrush.Name, e.Font, foreBrush, e.Bounds.X + collapsedItemHeight, e.Bounds.Y);
                     }
                 }
             }
@@ -690,7 +823,7 @@ namespace pyrochild.effects.smudge
             {
                 using (new WaitCursorChanger(this))
                 {
-                    Services.GetService<PaintDotNet.AppModel.IShellService>().LaunchFolder(this, PngBrushCollection.BrushesPath);
+                    ((PaintDotNet.AppModel.IShellService)Services.GetService(typeof(PaintDotNet.AppModel.IShellService))).LaunchFolder(this, PngBrushCollection.BrushesPath);
                 }
             }
             catch
@@ -699,7 +832,11 @@ namespace pyrochild.effects.smudge
 
         private void abort_Click(object sender, EventArgs e)
         {
-            renderer.Abort();
+            // In dark mode the button only looks disabled, so it can still be clicked.
+            if (strokeInProgress)
+            {
+                renderer.Abort();
+            }
         }
     }
 }
